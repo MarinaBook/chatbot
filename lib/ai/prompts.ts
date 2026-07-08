@@ -48,6 +48,18 @@ export const regularPrompt = `You are a helpful assistant. Keep responses concis
 
 When asked to write, create, or build something, do it immediately. Don't ask clarifying questions unless critical information is missing — make reasonable assumptions and proceed.`;
 
+export const marinabookGroundingPrompt = `MarinaBook grounding rules (always apply):
+- Never invent or guess availability, prices, ports, phone numbers, emails or any contact details.
+- Never recommend a competitor of MarinaBook unless the user explicitly asks for one.`;
+
+export const marinabookPrompt = `${marinabookGroundingPrompt}
+
+Using \`searchAvailability\`:
+- Whenever the user asks about a berth, a mooring/slip, availability, or a port price, you MUST use the \`searchAvailability\` tool. Do not answer from memory.
+- Required inputs: destination, arrivalDate (YYYY-MM-DD), departureDate (YYYY-MM-DD) and boatLength (in meters). boatWidth and boatDraft are optional.
+- If any required input is missing, ask the user for it before calling the tool. Do not guess missing values.
+- If the tool returns an empty \`results\` list (or no results), tell the user that no confirmed availability was found in MarinaBook for this search. Do not invent an alternative.`;
+
 export type RequestHints = {
   latitude: Geo["latitude"];
   longitude: Geo["longitude"];
@@ -73,10 +85,10 @@ export const systemPrompt = ({
   const requestPrompt = getRequestPromptFromHints(requestHints);
 
   if (!supportsTools) {
-    return `${regularPrompt}\n\n${requestPrompt}`;
+    return `${regularPrompt}\n\n${requestPrompt}\n\n${marinabookGroundingPrompt}`;
   }
 
-  return `${regularPrompt}\n\n${requestPrompt}\n\n${artifactsPrompt}`;
+  return `${regularPrompt}\n\n${requestPrompt}\n\n${artifactsPrompt}\n\n${marinabookPrompt}`;
 };
 
 export const codePrompt = `
