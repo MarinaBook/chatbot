@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { prepareBooking } from "./prepare-booking";
+
+const originalBackendUrl = process.env.BACKEND_URL;
+const originalMarinaBookApiUrl = process.env.MARINABOOK_API_URL;
+const originalAssistantApiKey = process.env.MARINABOOK_ASSISTANT_API_KEY;
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  process.env.BACKEND_URL = originalBackendUrl;
+  process.env.MARINABOOK_API_URL = originalMarinaBookApiUrl;
+  process.env.MARINABOOK_ASSISTANT_API_KEY = originalAssistantApiKey;
+  globalThis.fetch = originalFetch;
+});
 
 // Backend payload for a successfully prepared booking (200 OK, success: true).
 // The booking details live under `booking`, as returned by the production
@@ -39,7 +51,7 @@ const toolOptions = {
 } as unknown as Parameters<typeof runTool>[1];
 
 function mockBackend(response: unknown, status = 200) {
-  process.env.BACKEND_URL = "https://api.marinabook.app/api";
+  process.env.MARINABOOK_API_URL = "https://api.marinabook.app";
   process.env.MARINABOOK_ASSISTANT_API_KEY = "test-secret-key";
   globalThis.fetch = (async () =>
     new Response(JSON.stringify(response), {
@@ -93,7 +105,7 @@ test("backend 401 returns an error object, never throws", async () => {
 
   const out = await runTool(VALID_INPUT, toolOptions);
 
-  assert.ok(out.error && String(out.error).includes("401"));
+  assert.ok(out.error && String(out.error).includes("Unauthorized"));
 });
 
 test("backend 500 returns an error object, never throws", async () => {
@@ -101,7 +113,7 @@ test("backend 500 returns an error object, never throws", async () => {
 
   const out = await runTool(VALID_INPUT, toolOptions);
 
-  assert.ok(out.error && String(out.error).includes("500"));
+  assert.ok(out.error && String(out.error).includes("boom"));
 });
 
 test("missing configuration returns an error and never calls the backend", async () => {

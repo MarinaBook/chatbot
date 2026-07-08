@@ -3,6 +3,14 @@ import { getToken } from "next-auth/jwt";
 import { isBasicAuthExemptPath, validateBasicAuth } from "./lib/basic-auth";
 import { guestRegex, isDevelopmentEnvironment } from "./lib/constants";
 
+export function isChatApiPath(pathname: string) {
+  return pathname === "/api/chat" || pathname === "/api/chat/";
+}
+
+export function shouldBypassGuestRedirect(pathname: string) {
+  return pathname.startsWith("/api/auth") || isChatApiPath(pathname);
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -16,7 +24,7 @@ export async function proxy(request: NextRequest) {
     return new Response("pong", { status: 200 });
   }
 
-  if (pathname.startsWith("/api/auth")) {
+  if (shouldBypassGuestRedirect(pathname)) {
     return NextResponse.next();
   }
 

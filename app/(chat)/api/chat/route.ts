@@ -48,6 +48,11 @@ import type { ChatMessage, WaitingStatusData } from "@/lib/types";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
+import {
+  isBearerAuthorizationHeader,
+  maybeHandleServerToServerChatRequest,
+  parseChatRequestJson,
+} from "./server-to-server-http";
 
 export const maxDuration = 60;
 
@@ -70,10 +75,31 @@ function getStreamContext() {
 export { getStreamContext };
 
 export async function POST(request: Request) {
+  const authorizationHeader = request.headers.get("authorization");
+  const isBearerRequest = isBearerAuthorizationHeader(authorizationHeader);
+  const parsedRequest = await parseChatRequestJson(request, isBearerRequest);
+
+  if (!parsedRequest.ok) {
+    if (parsedRequest.response) {
+      return parsedRequest.response;
+    }
+
+    return new ChatbotError("bad_request:api").toResponse();
+  }
+
+  const { json } = parsedRequest;
+  const serverToServerResponse = await maybeHandleServerToServerChatRequest({
+    authorizationHeader,
+    json,
+  });
+
+  if (serverToServerResponse) {
+    return serverToServerResponse;
+  }
+
   let requestBody: PostRequestBody;
 
   try {
-    const json = await request.json();
     requestBody = postRequestBodySchema.parse(json);
   } catch {
     return new ChatbotError("bad_request:api").toResponse();
@@ -350,14 +376,19 @@ export async function POST(request: Request) {
       generateId: generateUUID,
       onEnd: async ({ messages: finishedMessages }) => {
         if (isToolApprovalFlow) {
-          for (const finishedMsg of finishedMessages) {
-            const existingMsg = uiMessages.find((m) => m.id === finishedMsg.id);
-            if (existingMsg) {
-              await updateMessage({
-                id: finishedMsg.id,
-                parts: finishedMsg.parts,
-              });
-            } else {
+          await Promise.all(
+            finishedMessages.map(async (finishedMsg) => {
+              const existingMsg = uiMessages.find(
+                (m) => m.id === finishedMsg.id
+              );
+              if (existingMsg) {
+                await updateMessage({
+                  id: finishedMsg.id,
+                  parts: finishedMsg.parts,
+                });
+                return;
+              }
+
               await saveMessages({
                 messages: [
                   {
@@ -370,8 +401,8 @@ export async function POST(request: Request) {
                   },
                 ],
               });
-            }
-          }
+            })
+          );
         } else if (finishedMessages.length > 0) {
           await saveMessages({
             messages: finishedMessages.map((currentMessage) => ({

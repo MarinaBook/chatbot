@@ -1,6 +1,11 @@
 import "server-only";
 import { tool } from "ai";
 import { z } from "zod";
+import {
+  buildMarinaBookApiUrl,
+  getMarinaBookApiKey,
+  getMarinaBookErrorMessage,
+} from "@/lib/marinabook-api";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -44,17 +49,15 @@ export const prepareBooking = tool({
     boatWidth,
     boatDraft,
   }) => {
-    const backendUrl = process.env.BACKEND_URL;
-    const apiKey = process.env.MARINABOOK_ASSISTANT_API_KEY;
+    const endpoint = buildMarinaBookApiUrl("/assistant/prepare-booking");
+    const apiKey = getMarinaBookApiKey();
 
-    if (!(backendUrl && apiKey)) {
+    if (!(endpoint && apiKey)) {
       return {
         error:
           "The MarinaBook booking service is not configured. Do not invent any result.",
       };
     }
-
-    const endpoint = `${backendUrl.replace(/\/$/, "")}/assistant/prepare-booking`;
 
     try {
       const response = await fetch(endpoint, {
@@ -74,8 +77,12 @@ export const prepareBooking = tool({
       });
 
       if (!response.ok) {
+        const errorMessage = await getMarinaBookErrorMessage(response);
+
         return {
-          error: `MarinaBook booking preparation failed (status ${response.status}). Do not invent any result.`,
+          error: errorMessage
+            ? `MarinaBook booking preparation failed: ${errorMessage}`
+            : `MarinaBook booking preparation failed (status ${response.status}). Do not invent any result.`,
         };
       }
 

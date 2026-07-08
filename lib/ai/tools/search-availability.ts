@@ -1,6 +1,11 @@
 import "server-only";
 import { tool } from "ai";
 import { z } from "zod";
+import {
+  buildMarinaBookApiUrl,
+  getMarinaBookApiKey,
+  getMarinaBookErrorMessage,
+} from "@/lib/marinabook-api";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -52,19 +57,16 @@ export const searchAvailability = tool({
     departureDate,
     boatLength,
     boatWidth,
-    boatDraft,
   }) => {
-    const backendUrl = process.env.BACKEND_URL;
-    const apiKey = process.env.MARINABOOK_ASSISTANT_API_KEY;
+    const endpoint = buildMarinaBookApiUrl("/assistant/search-availability");
+    const apiKey = getMarinaBookApiKey();
 
-    if (!(backendUrl && apiKey)) {
+    if (!(endpoint && apiKey)) {
       return {
         error:
           "The MarinaBook availability service is not configured. Do not invent any result.",
       };
     }
-
-    const endpoint = `${backendUrl.replace(/\/$/, "")}/assistant/search-availability`;
 
     try {
       const response = await fetch(endpoint, {
@@ -74,7 +76,6 @@ export const searchAvailability = tool({
           departureDate,
           destination,
           ...(boatWidth !== undefined && { boatWidth }),
-          ...(boatDraft !== undefined && { boatDraft }),
         }),
         headers: {
           "content-type": "application/json",
@@ -84,8 +85,12 @@ export const searchAvailability = tool({
       });
 
       if (!response.ok) {
+        const errorMessage = await getMarinaBookErrorMessage(response);
+
         return {
-          error: `MarinaBook availability search failed (status ${response.status}). Do not invent any result.`,
+          error: errorMessage
+            ? `MarinaBook availability search failed: ${errorMessage}`
+            : `MarinaBook availability search failed (status ${response.status}). Do not invent any result.`,
         };
       }
 

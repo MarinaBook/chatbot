@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { searchAvailability } from "./search-availability";
+
+const originalBackendUrl = process.env.BACKEND_URL;
+const originalMarinaBookApiUrl = process.env.MARINABOOK_API_URL;
+const originalAssistantApiKey = process.env.MARINABOOK_ASSISTANT_API_KEY;
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  process.env.BACKEND_URL = originalBackendUrl;
+  process.env.MARINABOOK_API_URL = originalMarinaBookApiUrl;
+  process.env.MARINABOOK_ASSISTANT_API_KEY = originalAssistantApiKey;
+  globalThis.fetch = originalFetch;
+});
 
 // Exactly the real backend payload provided by the MarinaBook API for a
 // non-empty search (200 OK). This is the case that previously surfaced
@@ -50,7 +62,7 @@ const toolOptions = {
 } as unknown as Parameters<typeof runTool>[1];
 
 function mockBackend(response: unknown, status = 200) {
-  process.env.BACKEND_URL = "https://api.marinabook.app/api";
+  process.env.MARINABOOK_API_URL = "https://api.marinabook.app";
   process.env.MARINABOOK_ASSISTANT_API_KEY = "test-secret-key";
   globalThis.fetch = (async () =>
     new Response(JSON.stringify(response), {
@@ -122,5 +134,46 @@ test("non-ok backend response returns an error object, never throws", async () =
     toolOptions
   );
 
-  assert.ok(out.error && String(out.error).includes("500"));
+  assert.ok(out.error && String(out.error).includes("nope"));
+});
+
+test("does not send draft to MarinaBook search-availability", async () => {
+  process.env.MARINABOOK_API_URL = "https://api.marinabook.app";
+  process.env.MARINABOOK_ASSISTANT_API_KEY = "test-secret-key";
+
+  let requestBody: unknown;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(
+      input,
+      "https://api.marinabook.app/api/assistant/search-availability"
+    );
+    requestBody = JSON.parse(String(init?.body ?? "{}"));
+
+    return Promise.resolve(
+      new Response(JSON.stringify(REAL_JSON), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      })
+    );
+  }) as unknown as typeof fetch;
+
+  await runTool(
+    {
+      arrivalDate: "2026-09-15",
+      boatDraft: 2,
+      boatLength: 12,
+      boatWidth: 4,
+      departureDate: "2026-09-18",
+      destination: "Sidi Bou Saïd",
+    },
+    toolOptions
+  );
+
+  assert.deepEqual(requestBody, {
+    arrivalDate: "2026-09-15",
+    boatLength: 12,
+    boatWidth: 4,
+    departureDate: "2026-09-18",
+    destination: "Sidi Bou Saïd",
+  });
 });
