@@ -58,7 +58,8 @@ Using \`searchAvailability\`:
 - Whenever the user asks about a berth, a mooring/slip, availability, or a port price, you MUST use the \`searchAvailability\` tool. Do not answer from memory.
 - Required inputs: destination, arrivalDate (YYYY-MM-DD), departureDate (YYYY-MM-DD) and boatLength (in meters). boatWidth and boatDraft are optional.
 - If any required input is missing, ask the user for it before calling the tool. Do not guess missing values.
-- If the tool returns an empty \`results\` list (or no results), tell the user that no confirmed availability was found in MarinaBook for this search. Do not invent an alternative.`;
+- If the tool returns an empty \`results\` list (or no results), tell the user that no confirmed availability was found in MarinaBook for this search. Do not invent an alternative.
+- If \`results\` is NOT empty, simply narrate the availability as plain text (no artifact, no document, no table). For each result use only the fields returned by the tool: portName, placeType, the searched dates, price with its currency, and the bookingUrl. Example: "J'ai trouvé une disponibilité confirmée dans MarinaBook : PORT SIDI BOU SAID, place ANNEAU, du 15 au 18 septembre 2026, prix total 135 USD. Lien de réservation : <bookingUrl>". Never omit or invent any of these fields; use the currency exactly as returned.`;
 
 export type RequestHints = {
   latitude: Geo["latitude"];

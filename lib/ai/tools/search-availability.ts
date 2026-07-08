@@ -4,6 +4,45 @@ import { z } from "zod";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
+// Lenient schema for a single availability result. Every field is optional and
+// free-form on purpose: the backend is the source of truth and may add fields
+// or use any currency/place type. This must never reject real, non-empty
+// results (that is what previously surfaced "An error occurred").
+const availabilityResultSchema = z
+  .object({
+    available: z.boolean().optional(),
+    bookingUrl: z.string().optional(),
+    city: z.string().optional(),
+    country: z.string().optional(),
+    currency: z.string().optional(),
+    latitude: z.number().optional(),
+    longitude: z.number().optional(),
+    maxBoatDraft: z.number().optional(),
+    maxBoatLength: z.number().optional(),
+    maxBoatWidth: z.number().optional(),
+    placeId: z.string().optional(),
+    placeType: z.string().optional(),
+    portId: z.string().optional(),
+    portName: z.string().optional(),
+    portSlug: z.string().optional(),
+    price: z.number().optional(),
+    services: z.array(z.unknown()).optional().default([]),
+  })
+  .loose();
+
+// Lenient envelope. Accepts both the backend success payload and our own
+// { error } fallbacks. `.loose()` + all-optional fields means a well-formed
+// object never fails validation.
+const searchAvailabilityOutputSchema = z
+  .object({
+    count: z.number().optional(),
+    error: z.string().optional(),
+    query: z.unknown().optional(),
+    results: z.array(availabilityResultSchema).optional(),
+    success: z.boolean().optional(),
+  })
+  .loose();
+
 export const searchAvailability = tool({
   description:
     "Search real berth/mooring availability and port pricing in the MarinaBook network. Call this whenever the user asks about a berth, a slip, availability, or a port price. Only call it once destination, arrivalDate, departureDate and boatLength are known; ask the user for any missing value first. Never invent availability, prices, ports or contact details.",
@@ -50,7 +89,13 @@ export const searchAvailability = tool({
         };
       }
 
-      return await response.json();
+      const raw = await response.json();
+
+      // Normalize through the lenient schema. On the (unlikely) parse failure we
+      // still return the raw payload rather than throwing, so a valid non-empty
+      // result can never break the chat stream.
+      const parsed = searchAvailabilityOutputSchema.safeParse(raw);
+      return parsed.success ? parsed.data : raw;
     } catch {
       return {
         error:
