@@ -25,6 +25,7 @@ import { getLanguageModel } from "@/lib/ai/providers";
 import { createDocument } from "@/lib/ai/tools/create-document";
 import { editDocument } from "@/lib/ai/tools/edit-document";
 import { getWeather } from "@/lib/ai/tools/get-weather";
+import { prepareBooking } from "@/lib/ai/tools/prepare-booking";
 import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
 import { searchAvailability } from "@/lib/ai/tools/search-availability";
 import { updateDocument } from "@/lib/ai/tools/update-document";
@@ -100,8 +101,8 @@ export async function POST(request: Request) {
     const userType: UserType = session.user.type;
 
     const messageCount = await getMessageCountByUserId({
-      id: session.user.id,
       differenceInHours: 1,
+      id: session.user.id,
     });
 
     if (messageCount > entitlementsByUserType[userType].maxMessagesPerHour) {
@@ -122,8 +123,8 @@ export async function POST(request: Request) {
     } else if (message?.role === "user") {
       await saveChat({
         id,
-        userId: session.user.id,
         title: "New chat",
+        userId: session.user.id,
         visibility: selectedVisibilityType,
       });
       titlePromise = generateTitleFromUserMessage({ message });
@@ -170,22 +171,22 @@ export async function POST(request: Request) {
     const { longitude, latitude, city, country } = geolocation(request);
 
     const requestHints: RequestHints = {
-      longitude,
-      latitude,
       city,
       country,
+      latitude,
+      longitude,
     };
 
     if (message?.role === "user") {
       await saveMessages({
         messages: [
           {
-            chatId: id,
-            id: message.id,
-            role: "user",
-            parts: message.parts,
             attachments: [],
+            chatId: id,
             createdAt: new Date(),
+            id: message.id,
+            parts: message.parts,
+            role: "user",
           },
         ],
       });
@@ -200,7 +201,6 @@ export async function POST(request: Request) {
     const modelMessages = await convertToModelMessages(uiMessages);
 
     const stream = createUIMessageStream({
-      originalMessages: isToolApprovalFlow ? uiMessages : undefined,
       execute: async ({ writer: dataStream }) => {
         const modelName = modelConfig?.name ?? chatModel;
         let hasModelActivity = false;
@@ -220,14 +220,14 @@ export async function POST(request: Request) {
             return;
           }
           dataStream.write({
-            type: "data-waiting-status",
             data: {
-              phase,
               message: messageText,
               modelId: chatModel,
               modelName,
+              phase,
             },
             transient: true,
+            type: "data-waiting-status",
           });
         };
 
@@ -265,48 +265,23 @@ export async function POST(request: Request) {
         };
 
         const result = streamText({
-          model: getLanguageModel(chatModel),
-          instructions: systemPrompt({ requestHints, supportsTools }),
-          messages: modelMessages,
-          stopWhen: isStepCount(5),
           activeTools:
             isReasoningModel && !supportsTools
               ? []
               : [
                   "getWeather",
                   "searchAvailability",
+                  "prepareBooking",
                   "createDocument",
                   "editDocument",
                   "updateDocument",
                   "requestSuggestions",
                 ],
-          providerOptions: {
-            ...(modelConfig?.gatewayOrder && {
-              gateway: { order: modelConfig.gatewayOrder },
-            }),
-            ...(modelConfig?.reasoningEffort && {
-              openai: { reasoningEffort: modelConfig.reasoningEffort },
-            }),
-          },
-          tools: {
-            getWeather,
-            searchAvailability,
-            createDocument: createDocument({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-            editDocument: editDocument({ dataStream, session }),
-            updateDocument: updateDocument({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
-            requestSuggestions: requestSuggestions({
-              session,
-              dataStream,
-              modelId: chatModel,
-            }),
+          instructions: systemPrompt({ requestHints, supportsTools }),
+          messages: modelMessages,
+          model: getLanguageModel(chatModel),
+          onAbort() {
+            stopWaitingStatus();
           },
           onChunk({ chunk }) {
             if (isModelStreamActivity(chunk)) {
@@ -319,26 +294,53 @@ export async function POST(request: Request) {
           onError() {
             stopWaitingStatus();
           },
-          onAbort() {
-            stopWaitingStatus();
+          providerOptions: {
+            ...(modelConfig?.gatewayOrder && {
+              gateway: { order: modelConfig.gatewayOrder },
+            }),
+            ...(modelConfig?.reasoningEffort && {
+              openai: { reasoningEffort: modelConfig.reasoningEffort },
+            }),
           },
+          stopWhen: isStepCount(5),
           telemetry: {
-            isEnabled: isProductionEnvironment,
             functionId: "stream-text",
+            isEnabled: isProductionEnvironment,
+          },
+          tools: {
+            createDocument: createDocument({
+              dataStream,
+              modelId: chatModel,
+              session,
+            }),
+            editDocument: editDocument({ dataStream, session }),
+            getWeather,
+            prepareBooking,
+            requestSuggestions: requestSuggestions({
+              dataStream,
+              modelId: chatModel,
+              session,
+            }),
+            searchAvailability,
+            updateDocument: updateDocument({
+              dataStream,
+              modelId: chatModel,
+              session,
+            }),
           },
         });
 
         dataStream.merge(
           toUIMessageStream({
-            stream: result.stream,
             sendReasoning: isReasoningModel,
+            stream: result.stream,
           })
         );
 
         if (titlePromise) {
           try {
             const title = await titlePromise;
-            dataStream.write({ type: "data-chat-title", data: title });
+            dataStream.write({ data: title, type: "data-chat-title" });
             updateChatTitleById({ chatId: id, title });
           } catch {
             /* non-fatal */
@@ -359,12 +361,12 @@ export async function POST(request: Request) {
               await saveMessages({
                 messages: [
                   {
-                    id: finishedMsg.id,
-                    role: finishedMsg.role,
-                    parts: finishedMsg.parts,
-                    createdAt: new Date(),
                     attachments: [],
                     chatId: id,
+                    createdAt: new Date(),
+                    id: finishedMsg.id,
+                    parts: finishedMsg.parts,
+                    role: finishedMsg.role,
                   },
                 ],
               });
@@ -373,12 +375,12 @@ export async function POST(request: Request) {
         } else if (finishedMessages.length > 0) {
           await saveMessages({
             messages: finishedMessages.map((currentMessage) => ({
-              id: currentMessage.id,
-              role: currentMessage.role,
-              parts: currentMessage.parts,
-              createdAt: new Date(),
               attachments: [],
               chatId: id,
+              createdAt: new Date(),
+              id: currentMessage.id,
+              parts: currentMessage.parts,
+              role: currentMessage.role,
             })),
           });
         }
@@ -394,10 +396,10 @@ export async function POST(request: Request) {
         }
         return "Oops, an error occurred!";
       },
+      originalMessages: isToolApprovalFlow ? uiMessages : undefined,
     });
 
     return createUIMessageStreamResponse({
-      stream,
       async consumeSseStream({ stream: sseStream }) {
         if (!process.env.REDIS_URL) {
           return;
@@ -406,7 +408,7 @@ export async function POST(request: Request) {
           const streamContext = getStreamContext();
           if (streamContext) {
             const streamId = generateId();
-            await createStreamId({ streamId, chatId: id });
+            await createStreamId({ chatId: id, streamId });
             await streamContext.createNewResumableStream(
               streamId,
               () => sseStream
@@ -416,6 +418,7 @@ export async function POST(request: Request) {
           /* non-critical */
         }
       },
+      stream,
     });
   } catch (error) {
     const vercelId = request.headers.get("x-vercel-id");

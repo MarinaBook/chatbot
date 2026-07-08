@@ -59,7 +59,19 @@ Using \`searchAvailability\`:
 - Required inputs: destination, arrivalDate (YYYY-MM-DD), departureDate (YYYY-MM-DD) and boatLength (in meters). boatWidth and boatDraft are optional.
 - If any required input is missing, ask the user for it before calling the tool. Do not guess missing values.
 - If the tool returns an empty \`results\` list (or no results), tell the user that no confirmed availability was found in MarinaBook for this search. Do not invent an alternative.
-- If \`results\` is NOT empty, simply narrate the availability as plain text (no artifact, no document, no table). For each result use only the fields returned by the tool: portName, placeType, the searched dates, price with its currency, and the bookingUrl. Example: "J'ai trouvé une disponibilité confirmée dans MarinaBook : PORT SIDI BOU SAID, place ANNEAU, du 15 au 18 septembre 2026, prix total 135 USD. Lien de réservation : <bookingUrl>". Never omit or invent any of these fields; use the currency exactly as returned.`;
+- If \`results\` is NOT empty, simply narrate the availability as plain text (no artifact, no document, no table). For each result use only the fields returned by the tool: portName, placeType, the searched dates, price with its currency, and the bookingUrl. Example: "J'ai trouvé une disponibilité confirmée dans MarinaBook : PORT SIDI BOU SAID, place ANNEAU, du 15 au 18 septembre 2026, prix total 135 USD. Lien de réservation : <bookingUrl>". Never omit or invent any of these fields; use the currency exactly as returned.
+
+Using \`prepareBooking\`:
+- When the user asks to book/reserve a specific place that was previously found with \`searchAvailability\`, use the \`prepareBooking\` tool. Do not use it before a place has been found, and never answer from memory.
+- Required inputs: placeId (the identifier returned by searchAvailability), arrivalDate (YYYY-MM-DD), departureDate (YYYY-MM-DD) and boatLength (in meters). boatWidth and boatDraft are optional. If any required input is missing, ask the user for it before calling the tool. Do not guess missing values.
+- This tool ONLY prepares a booking. It never confirms it, never takes payment and never creates a reservation. NEVER tell the user the booking is confirmed.
+- On success (the tool returns \`success: true\` and a \`booking\` object), narrate the prepared booking as plain text (no artifact, no document, no table) using only the fields returned in \`booking\`: portName, placeType, the dates, price with its currency, and bookingUrl. Then clearly state that the booking is only prepared, not yet confirmed, and will be finalized on MarinaBook. Example: "J'ai préparé votre réservation pour PORT SIDI BOU SAID, place ANNEAU, du 15 au 18 septembre 2026. Prix total : 135 USD. Pour finaliser la réservation, cliquez ici : <bookingUrl>. Cette réservation n'est pas encore confirmée. Elle sera finalisée sur MarinaBook." Never omit or invent any of these fields; use the currency exactly as returned.
+- On failure (the tool returns \`success: false\` and a business \`code\`), do not present any booking. Explain the \`code\` simply, without inventing anything:
+  - PLACE_NOT_VISIBLE : cette place n'est plus visible à la réservation.
+  - PLACE_NOT_COMPATIBLE : les dimensions du bateau ne sont pas compatibles avec cette place.
+  - PLACE_NOT_AVAILABLE : cette place n'est pas disponible pour les dates demandées.
+  - PRICE_UNAVAILABLE : le prix ne peut pas être calculé pour cette réservation pour le moment.
+- Never take payment, never create or confirm a reservation, and never invent prices, availability, ports, phone numbers or emails.`;
 
 export type RequestHints = {
   latitude: Geo["latitude"];
