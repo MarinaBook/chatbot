@@ -1,9 +1,16 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
+import { isBasicAuthExemptPath, validateBasicAuth } from "./lib/basic-auth";
 import { guestRegex, isDevelopmentEnvironment } from "./lib/constants";
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  const basicAuthResponse = getBasicAuthResponse(request);
+
+  if (basicAuthResponse) {
+    return basicAuthResponse;
+  }
 
   if (pathname.startsWith("/ping")) {
     return new Response("pong", { status: 200 });
@@ -36,6 +43,27 @@ export async function proxy(request: NextRequest) {
   }
 
   return NextResponse.next();
+}
+
+function getBasicAuthResponse(request: NextRequest) {
+  if (isBasicAuthExemptPath(request.nextUrl.pathname)) {
+    return null;
+  }
+
+  const result = validateBasicAuth({
+    authHeader: request.headers.get("authorization"),
+    password: process.env.CHATBOT_BASIC_AUTH_PASSWORD,
+    username: process.env.CHATBOT_BASIC_AUTH_USER,
+  });
+
+  if (result.ok) {
+    return null;
+  }
+
+  return new NextResponse(result.message, {
+    headers: result.headers,
+    status: result.status,
+  });
 }
 
 export const config = {
