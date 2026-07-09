@@ -4,6 +4,7 @@ import { z } from "zod";
 import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { searchAvailability } from "@/lib/ai/tools/search-availability";
+import { resolveFullMonthRange } from "./dates";
 import {
   detectLanguage,
   type ReplyLanguage,
@@ -658,8 +659,22 @@ export async function handleServerToServerChat(
   request: ServerToServerChatRequest
 ): Promise<ServerToServerChatResponse> {
   const llmResult = await extractIntentWithLlm(request.message);
-  const { intent, searchParams } =
+  const { intent, searchParams: extractedSearchParams } =
     llmResult ?? resolveWithRegex(request.message);
+
+  // Deterministic month normalization: a "full month" expression (e.g. "per il
+  // mese di settembre", "خلال شهر سبتمبر") is resolved to the first and last day
+  // of that month regardless of whether the LLM or the regex fallback produced
+  // the params. Applied BEFORE the missing-information validation below, so two
+  // identical requests always yield the same dates. See dates.ts.
+  const monthRange = resolveFullMonthRange(request.message, new Date());
+  const searchParams: SearchParams = monthRange
+    ? {
+        ...extractedSearchParams,
+        arrivalDate: monthRange.arrivalDate,
+        departureDate: monthRange.departureDate,
+      }
+    : extractedSearchParams;
 
   // Reply in the language of the user's message: the LLM detection wins when
   // available, then the deterministic detector, then the frontend locale, then

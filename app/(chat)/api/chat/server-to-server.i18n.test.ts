@@ -112,3 +112,64 @@ test("returns detectedLanguage on the availability path", async () => {
   assert.equal(response.detectedLanguage, "fr");
   assert.match(response.reply, /VIEUX-PORT DE MARSEILLE/);
 });
+
+// A full-month expression must be normalized deterministically to the first and
+// last day of that month, before the missing-information validation runs, so the
+// dates are never reported as missing. Independent of language.
+
+test("normalizes a French full-month expression to arrival/departure dates", async () => {
+  const response = await handleServerToServerChat(
+    build("Je cherche une place pour le mois de septembre.")
+  );
+
+  assert.equal(response.detectedLanguage, "fr");
+  assert.match(response.searchParams.arrivalDate ?? "", /^\d{4}-09-01$/);
+  assert.match(response.searchParams.departureDate ?? "", /^\d{4}-09-30$/);
+});
+
+test("normalizes an Italian full-month expression to arrival/departure dates", async () => {
+  const response = await handleServerToServerChat(
+    build("Vorrei un posto in marina per il mese di settembre.", "it")
+  );
+
+  assert.equal(response.detectedLanguage, "it");
+  assert.match(response.searchParams.arrivalDate ?? "", /^\d{4}-09-01$/);
+  assert.match(response.searchParams.departureDate ?? "", /^\d{4}-09-30$/);
+});
+
+test("normalizes an Arabic full-month expression to arrival/departure dates", async () => {
+  const response = await handleServerToServerChat(
+    build("أبحث عن مكان في المارينا خلال شهر سبتمبر.", "ar")
+  );
+
+  assert.equal(response.detectedLanguage, "ar");
+  assert.match(response.searchParams.arrivalDate ?? "", /^\d{4}-09-01$/);
+  assert.match(response.searchParams.departureDate ?? "", /^\d{4}-09-30$/);
+});
+
+test("produces identical searchParams for two identical requests", async () => {
+  const message =
+    "Vorrei un posto barca in Tunisia per il mese di settembre, per un'imbarcazione di 1 m x 1 m con un pescaggio di 1 m.";
+
+  const first = await handleServerToServerChat(build(message, "it"));
+  const second = await handleServerToServerChat(build(message, "it"));
+
+  assert.deepEqual(first.searchParams, second.searchParams);
+  assert.equal(first.detectedLanguage, second.detectedLanguage);
+  assert.equal(first.intent, second.intent);
+  assert.match(first.searchParams.arrivalDate ?? "", /^\d{4}-09-01$/);
+  assert.match(first.searchParams.departureDate ?? "", /^\d{4}-09-30$/);
+});
+
+test("a standalone message does not inherit language or params from a previous one", async () => {
+  await handleServerToServerChat(
+    build("أبحث عن مكان في المارينا خلال شهر سبتمبر لقارب طوله ١٢ مترًا.", "ar")
+  );
+
+  const second = await handleServerToServerChat(
+    build("Bonjour, pouvez-vous m’aider ?")
+  );
+
+  assert.equal(second.detectedLanguage, "fr");
+  assert.deepEqual(second.searchParams, {});
+});
