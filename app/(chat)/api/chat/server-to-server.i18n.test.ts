@@ -173,3 +173,97 @@ test("a standalone message does not inherit language or params from a previous o
   assert.equal(second.detectedLanguage, "fr");
   assert.deepEqual(second.searchParams, {});
 });
+
+// The exact message from the Arabic month-extraction bug report. Its dates must
+// be extracted deterministically, identically across every frontend locale.
+const ARABIC_BUG_MESSAGE =
+  "أرغب في الحصول على مرسى في تونس لشهر سبتمبر، لقارب أبعاده متر واحد × متر واحد وغاطسه متر واحد.";
+// Fixed reference date so the year rule is deterministic in tests.
+const NOW = () => new Date("2026-07-09T00:00:00.000Z");
+
+for (const locale of ["fr", "ar", "en"]) {
+  test(`extracts September for the exact Arabic message with locale "${locale}"`, async () => {
+    const response = await handleServerToServerChat(
+      build(ARABIC_BUG_MESSAGE, locale),
+      { now: NOW }
+    );
+
+    assert.equal(response.searchParams.arrivalDate, "2026-09-01");
+    assert.equal(response.searchParams.departureDate, "2026-09-30");
+  });
+}
+
+test("extracts September for the exact Arabic message with no locale provided", async () => {
+  const request = serverToServerChatRequestSchema.parse({
+    message: ARABIC_BUG_MESSAGE,
+    sessionId: TEST_SESSION_ID,
+    source: "marinabook_frontend",
+  });
+
+  const response = await handleServerToServerChat(request, { now: NOW });
+
+  assert.equal(response.searchParams.arrivalDate, "2026-09-01");
+  assert.equal(response.searchParams.departureDate, "2026-09-30");
+});
+
+test("produces identical searchParams for the Arabic message regardless of locale", async () => {
+  const fr = await handleServerToServerChat(build(ARABIC_BUG_MESSAGE, "fr"), {
+    now: NOW,
+  });
+  const ar = await handleServerToServerChat(build(ARABIC_BUG_MESSAGE, "ar"), {
+    now: NOW,
+  });
+  const en = await handleServerToServerChat(build(ARABIC_BUG_MESSAGE, "en"), {
+    now: NOW,
+  });
+
+  assert.deepEqual(fr.searchParams, ar.searchParams);
+  assert.deepEqual(fr.searchParams, en.searchParams);
+});
+
+test("two identical Arabic requests produce identical searchParams", async () => {
+  const first = await handleServerToServerChat(
+    build(ARABIC_BUG_MESSAGE, "ar"),
+    {
+      now: NOW,
+    }
+  );
+  const second = await handleServerToServerChat(
+    build(ARABIC_BUG_MESSAGE, "ar"),
+    { now: NOW }
+  );
+
+  assert.deepEqual(first.searchParams, second.searchParams);
+});
+
+test("fallback path (no LLM) extracts the deterministic Arabic dates", async () => {
+  // No `extract` override: production extractIntentWithLlm returns null without
+  // LLM_API_KEY, so this exercises the regex fallback + deterministic override.
+  const response = await handleServerToServerChat(
+    build(ARABIC_BUG_MESSAGE, "ar"),
+    { now: NOW }
+  );
+
+  assert.equal(response.searchParams.arrivalDate, "2026-09-01");
+  assert.equal(response.searchParams.departureDate, "2026-09-30");
+});
+
+test("LLM path cannot overwrite the deterministic Arabic dates with null", async () => {
+  // Simulate the LLM returning the language but null dates (the flaky behavior).
+  const response = await handleServerToServerChat(
+    build(ARABIC_BUG_MESSAGE, "ar"),
+    {
+      extract: () =>
+        Promise.resolve({
+          detectedLanguage: "ar",
+          intent: "availability_search" as const,
+          searchParams: { boatLength: 1 },
+        }),
+      now: NOW,
+    }
+  );
+
+  assert.equal(response.detectedLanguage, "ar");
+  assert.equal(response.searchParams.arrivalDate, "2026-09-01");
+  assert.equal(response.searchParams.departureDate, "2026-09-30");
+});
