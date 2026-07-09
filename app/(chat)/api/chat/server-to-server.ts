@@ -1,5 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
+import { generateText } from "ai";
 import { z } from "zod";
+import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
+import { getLanguageModel } from "@/lib/ai/providers";
 import { searchAvailability } from "@/lib/ai/tools/search-availability";
 
 const SERVER_TO_SERVER_SOURCE = "marinabook_frontend";
@@ -410,6 +413,12 @@ function createGeneralReply(locale: "fr" | "en") {
   return "I received your message. This JSON API is currently optimized for MarinaBook availability requests.";
 }
 
+function createUnsupportedReply(locale: "fr" | "en") {
+  return locale === "fr"
+    ? "Je peux uniquement vous aider à rechercher une place de port. Précisez une destination, des dates d’arrivée et de départ, ainsi que la longueur de votre bateau."
+    : "I can only help you search for a berth. Please specify a destination, arrival and departure dates, and your boat length.";
+}
+
 function formatDateForReply(date: string, locale: "fr" | "en") {
   return new Intl.DateTimeFormat(locale === "fr" ? "fr-FR" : "en-US", {
     day: "numeric",
@@ -622,17 +631,208 @@ async function runAvailabilitySearch(searchParams: SearchParams) {
   };
 }
 
+const EXTRACTION_MODEL = DEFAULT_CHAT_MODEL;
+
+const DATE_ISO_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+type ServerToServerIntent =
+  | "availability_search"
+  | "general_question"
+  | "unsupported";
+
+const llmExtractionSchema = z.object({
+  arrivalDate: z.string().nullish(),
+  boatLength: z.union([z.number(), z.string()]).nullish(),
+  boatWidth: z.union([z.number(), z.string()]).nullish(),
+  departureDate: z.string().nullish(),
+  destination: z.string().nullish(),
+  draft: z.union([z.number(), z.string()]).nullish(),
+  intent: z
+    .enum(["availability_search", "general_question", "unsupported"])
+    .catch("availability_search"),
+});
+
+function buildExtractionSystemPrompt(today: string) {
+  return [
+    "You extract structured search intent for a marina berth booking assistant.",
+    `Today's date is ${today} (UTC).`,
+    "Return ONLY a JSON object, with no prose and no markdown code fences.",
+    "Shape:",
+    '{ "intent": "availability_search" | "general_question" | "unsupported",',
+    '  "destination": string | null,',
+    '  "arrivalDate": "YYYY-MM-DD" | null,',
+    '  "departureDate": "YYYY-MM-DD" | null,',
+    '  "boatLength": number | null,',
+    '  "boatWidth": number | null,',
+    '  "draft": number | null }',
+    "Rules:",
+    '- Use intent "availability_search" for ANY message about finding, checking or booking a berth, slip, mooring or port place, even when it is incomplete or imperfectly phrased. When a boating/port request is plausible, prefer availability_search.',
+    '- Use intent "general_question" for greetings or general questions that are clearly not a berth search.',
+    '- Use intent "unsupported" ONLY for messages that are clearly off-topic, nonsensical or absurd.',
+    "- Dates must be absolute in YYYY-MM-DD, resolving relative dates from today. Use null when a date is not given.",
+    "- boatLength, boatWidth and draft are in meters, as plain numbers. Use null when not given.",
+    "- Never invent destinations, dates or dimensions. Use null when unsure.",
+    "The user message may be in French or English.",
+  ].join("\n");
+}
+
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  if (!text) {
+    return null;
+  }
+
+  const withoutFences = text.replace(/```(?:json)?/gi, "").trim();
+  const start = withoutFences.indexOf("{");
+  const end = withoutFences.lastIndexOf("}");
+
+  if (start === -1 || end === -1 || end < start) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(withoutFences.slice(start, end + 1));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function toPositiveNumber(value: unknown) {
+  if (value === null || value === undefined) {
+    return;
+  }
+
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number.parseFloat(String(value).replace(",", "."));
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function toIsoDate(value: unknown) {
+  if (typeof value !== "string") {
+    return;
+  }
+
+  const trimmed = value.trim();
+  return DATE_ISO_REGEX.test(trimmed) ? trimmed : undefined;
+}
+
+function toDestinationValue(value: unknown) {
+  if (typeof value !== "string") {
+    return;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 1 ? trimmed : undefined;
+}
+
+function buildSearchParamsFromLlm(
+  raw: z.infer<typeof llmExtractionSchema>
+): SearchParams {
+  const parsed = searchParamsSchema.parse({
+    arrivalDate: toIsoDate(raw.arrivalDate),
+    boatLength: toPositiveNumber(raw.boatLength),
+    boatWidth: toPositiveNumber(raw.boatWidth),
+    departureDate: toIsoDate(raw.departureDate),
+    destination: toDestinationValue(raw.destination),
+    draft: toPositiveNumber(raw.draft),
+  });
+
+  return Object.fromEntries(
+    Object.entries(parsed).filter(([, value]) => value !== undefined)
+  ) as SearchParams;
+}
+
+// LLM-first extraction via Groq. Falls back (returns null) whenever the LLM is
+// unavailable, unauthenticated (e.g. unit tests without LLM_API_KEY) or returns
+// invalid JSON, so the deterministic regex parser stays as a safety net.
+async function extractIntentWithLlm(message: string): Promise<{
+  intent: ServerToServerIntent;
+  searchParams: SearchParams;
+} | null> {
+  if (!process.env.LLM_API_KEY) {
+    return null;
+  }
+
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    // Temporary [S2S] log to confirm Groq consumption in server-to-server mode.
+    console.log(`[S2S] S2S Groq mode active — model=${EXTRACTION_MODEL}`);
+
+    const { text } = await generateText({
+      model: getLanguageModel(EXTRACTION_MODEL),
+      prompt: message,
+      providerOptions: {
+        openai: { reasoningEffort: "low" },
+      },
+      system: buildExtractionSystemPrompt(today),
+    });
+
+    const json = extractJsonObject(text);
+
+    if (!json) {
+      return null;
+    }
+
+    const raw = llmExtractionSchema.parse(json);
+
+    return {
+      intent: raw.intent,
+      searchParams: buildSearchParamsFromLlm(raw),
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown error";
+    // Temporary [S2S] log for the regex fallback path.
+    console.log(
+      `[S2S] LLM extraction failed, falling back to regex: ${reason}`
+    );
+    return null;
+  }
+}
+
+// Deterministic regex fallback used whenever the Groq extraction is unavailable.
+function resolveWithRegex(message: string): {
+  intent: ServerToServerIntent;
+  searchParams: SearchParams;
+} {
+  const searchParams = extractSearchParams(message);
+
+  return {
+    intent: detectAvailabilityIntent(message, searchParams)
+      ? "availability_search"
+      : "general_question",
+    searchParams,
+  };
+}
+
 export async function handleServerToServerChat(
   request: ServerToServerChatRequest
 ): Promise<ServerToServerChatResponse> {
   const locale = normalizeLocale(request.locale);
-  const searchParams = extractSearchParams(request.message);
-  const isAvailabilitySearch = detectAvailabilityIntent(
-    request.message,
-    searchParams
+
+  const { intent, searchParams } =
+    (await extractIntentWithLlm(request.message)) ??
+    resolveWithRegex(request.message);
+
+  // Temporary [S2S] log of the resolved intent and extracted search params.
+  console.log(
+    `[S2S] intent=${intent} searchParams=${JSON.stringify(searchParams)}`
   );
 
-  if (!isAvailabilitySearch) {
+  if (intent === "unsupported") {
+    return serverToServerChatResponseSchema.parse({
+      intent: "unsupported",
+      reply: createUnsupportedReply(locale),
+      results: [],
+      searchParams,
+    });
+  }
+
+  if (intent === "general_question") {
     return serverToServerChatResponseSchema.parse({
       intent: "general_question",
       reply: createGeneralReply(locale),
