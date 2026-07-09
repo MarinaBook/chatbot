@@ -4,6 +4,19 @@ import { z } from "zod";
 import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { searchAvailability } from "@/lib/ai/tools/search-availability";
+import {
+  detectLanguage,
+  type ReplyLanguage,
+  resolveReplyLanguage,
+} from "./language";
+import {
+  createAvailabilityErrorReply,
+  createAvailabilityResultsReply,
+  createGeneralReply,
+  createMissingInformationReply,
+  createUnsupportedReply,
+  listMissingFields,
+} from "./replies";
 
 const SERVER_TO_SERVER_SOURCE = "marinabook_frontend";
 
@@ -53,6 +66,7 @@ const resultSchema = z.object({
 });
 
 export const serverToServerChatResponseSchema = z.object({
+  detectedLanguage: z.string().min(2).max(10),
   intent: supportedIntentSchema,
   reply: z.string().min(1),
   results: z.array(resultSchema),
@@ -135,10 +149,6 @@ const monthNumbers = new Map<string, number>([
   ["décembre", 12],
   ["december", 12],
 ]);
-
-function normalizeLocale(locale: string) {
-  return locale.toLowerCase().startsWith("fr") ? "fr" : "en";
-}
 
 function normalizeText(text: string) {
   return text.replace(/\s+/g, " ").trim();
@@ -356,108 +366,6 @@ function detectAvailabilityIntent(message: string, searchParams: SearchParams) {
   );
 }
 
-function listMissingFields(searchParams: SearchParams, locale: "fr" | "en") {
-  const labels =
-    locale === "fr"
-      ? {
-          arrivalDate: "la date d’arrivée",
-          boatLength: "la longueur du bateau",
-          departureDate: "la date de départ",
-          destination: "la destination",
-        }
-      : {
-          arrivalDate: "the arrival date",
-          boatLength: "the boat length",
-          departureDate: "the departure date",
-          destination: "the destination",
-        };
-
-  const requiredFields = [
-    "destination",
-    "arrivalDate",
-    "departureDate",
-    "boatLength",
-  ] as const;
-
-  return requiredFields
-    .filter((field) => searchParams[field] === undefined)
-    .map((field) => labels[field]);
-}
-
-function createMissingInformationReply(
-  missingFields: string[],
-  locale: "fr" | "en"
-) {
-  if (missingFields.length === 1) {
-    if (locale === "fr") {
-      return `Il me manque ${missingFields[0]} pour lancer la recherche.`;
-    }
-
-    return `I still need ${missingFields[0]} to run the search.`;
-  }
-
-  if (locale === "fr") {
-    return `Il me manque encore ${missingFields.join(
-      ", "
-    )} pour lancer la recherche.`;
-  }
-
-  return `I still need ${missingFields.join(", ")} to run the search.`;
-}
-
-function createGeneralReply(locale: "fr" | "en") {
-  if (locale === "fr") {
-    return "J’ai bien reçu votre message. Cette API JSON est actuellement optimisée pour les recherches de disponibilités MarinaBook.";
-  }
-
-  return "I received your message. This JSON API is currently optimized for MarinaBook availability requests.";
-}
-
-function createUnsupportedReply(locale: "fr" | "en") {
-  return locale === "fr"
-    ? "Je peux uniquement vous aider à rechercher une place de port. Précisez une destination, des dates d’arrivée et de départ, ainsi que la longueur de votre bateau."
-    : "I can only help you search for a berth. Please specify a destination, arrival and departure dates, and your boat length.";
-}
-
-function formatDateForReply(date: string, locale: "fr" | "en") {
-  return new Intl.DateTimeFormat(locale === "fr" ? "fr-FR" : "en-US", {
-    day: "numeric",
-    month: "long",
-    timeZone: "UTC",
-    year: "numeric",
-  }).format(new Date(`${date}T00:00:00.000Z`));
-}
-
-function createNoAvailabilityReply(locale: "fr" | "en") {
-  return locale === "fr"
-    ? "Je n’ai pas trouvé de disponibilité correspondant à ces critères. Vous pouvez modifier les dates, la destination ou les dimensions du bateau."
-    : "I could not find any availability matching these criteria. You can adjust the dates, destination, or boat dimensions.";
-}
-
-function createAvailabilityResultsReply(
-  results: Result[],
-  searchParams: SearchParams,
-  locale: "fr" | "en"
-) {
-  if (results.length === 0) {
-    return createNoAvailabilityReply(locale);
-  }
-
-  const [firstResult] = results;
-  const formattedArrivalDate = formatDateForReply(
-    searchParams.arrivalDate as string,
-    locale
-  );
-  const formattedDepartureDate = formatDateForReply(
-    searchParams.departureDate as string,
-    locale
-  );
-
-  return locale === "fr"
-    ? `J’ai trouvé une disponibilité au ${firstResult.portName}, place ${firstResult.placeType}, du ${formattedArrivalDate} au ${formattedDepartureDate}, pour ${firstResult.price} ${firstResult.currency}. Vous pouvez finaliser la réservation avec le bouton ci-dessous.`
-    : `I found availability at ${firstResult.portName}, ${firstResult.placeType}, from ${formattedArrivalDate} to ${formattedDepartureDate}, for ${firstResult.price} ${firstResult.currency}. You can complete the booking with the button below.`;
-}
-
 function mapAvailabilityResults(results: unknown[]) {
   return results
     .map((result) => {
@@ -486,83 +394,6 @@ function mapAvailabilityResults(results: unknown[]) {
       return parsed.success ? parsed.data : null;
     })
     .filter((result): result is Result => result !== null);
-}
-
-function createAvailabilityErrorReply(error: string, locale: "fr" | "en") {
-  const comparableError = toComparableText(error);
-
-  if (
-    comparableError.includes("boatlength") &&
-    comparableError.includes("required")
-  ) {
-    return locale === "fr"
-      ? "Il me manque la longueur du bateau pour lancer la recherche."
-      : "I still need the boat length to run the search.";
-  }
-
-  if (
-    comparableError.includes("destination") &&
-    comparableError.includes("required")
-  ) {
-    return locale === "fr"
-      ? "Il me manque la destination pour lancer la recherche."
-      : "I still need the destination to run the search.";
-  }
-
-  if (
-    comparableError.includes("arrivaldate") &&
-    comparableError.includes("required")
-  ) {
-    return locale === "fr"
-      ? "Il me manque la date d’arrivée pour lancer la recherche."
-      : "I still need the arrival date to run the search.";
-  }
-
-  if (
-    comparableError.includes("departuredate") &&
-    comparableError.includes("required")
-  ) {
-    return locale === "fr"
-      ? "Il me manque la date de départ pour lancer la recherche."
-      : "I still need the departure date to run the search.";
-  }
-
-  if (
-    comparableError.includes("boatwidth") &&
-    comparableError.includes("required")
-  ) {
-    return locale === "fr"
-      ? "Il me manque la largeur du bateau pour lancer la recherche."
-      : "I still need the boat width to run the search.";
-  }
-
-  if (
-    comparableError.includes("unrecognized key") &&
-    (comparableError.includes("draft") || comparableError.includes("boatdraft"))
-  ) {
-    return locale === "fr"
-      ? "Je garde le tirant d’eau dans le contexte, mais je ne l’envoie pas à MarinaBook pour cette recherche."
-      : "I keep the draft in context, but I do not send it to MarinaBook for this search.";
-  }
-
-  if (comparableError.includes("not configured")) {
-    return locale === "fr"
-      ? "Le service MarinaBook n’est pas configuré côté serveur."
-      : "The MarinaBook service is not configured on the server.";
-  }
-
-  if (
-    comparableError.includes("could not reach") ||
-    comparableError.includes("temporarily unavailable")
-  ) {
-    return locale === "fr"
-      ? "Le service MarinaBook est temporairement indisponible. Merci de réessayer dans quelques instants."
-      : "The MarinaBook service is temporarily unavailable. Please try again shortly.";
-  }
-
-  return locale === "fr"
-    ? "La recherche MarinaBook a rencontré une erreur côté serveur. Merci de réessayer dans quelques instants."
-    : "The MarinaBook search hit a server-side error. Please try again shortly.";
 }
 
 export function looksLikeServerToServerChatPayload(
@@ -646,6 +477,7 @@ const llmExtractionSchema = z.object({
   boatWidth: z.union([z.number(), z.string()]).nullish(),
   departureDate: z.string().nullish(),
   destination: z.string().nullish(),
+  detectedLanguage: z.string().nullish(),
   draft: z.union([z.number(), z.string()]).nullish(),
   intent: z
     .enum(["availability_search", "general_question", "unsupported"])
@@ -659,6 +491,7 @@ function buildExtractionSystemPrompt(today: string) {
     "Return ONLY a JSON object, with no prose and no markdown code fences.",
     "Shape:",
     '{ "intent": "availability_search" | "general_question" | "unsupported",',
+    '  "detectedLanguage": string,',
     '  "destination": string | null,',
     '  "arrivalDate": "YYYY-MM-DD" | null,',
     '  "departureDate": "YYYY-MM-DD" | null,',
@@ -669,10 +502,11 @@ function buildExtractionSystemPrompt(today: string) {
     '- Use intent "availability_search" for ANY message about finding, checking or booking a berth, slip, mooring or port place, even when it is incomplete or imperfectly phrased. When a boating/port request is plausible, prefer availability_search.',
     '- Use intent "general_question" for greetings or general questions that are clearly not a berth search.',
     '- Use intent "unsupported" ONLY for messages that are clearly off-topic, nonsensical or absurd.',
+    '- "detectedLanguage" is the dominant language of the user message as a short ISO 639-1 code (e.g. "fr", "en", "ar", "es", "it", "pt", "de"). Use the dominant language for multilingual messages.',
     "- Dates must be absolute in YYYY-MM-DD, resolving relative dates from today. Use null when a date is not given.",
     "- boatLength, boatWidth and draft are in meters, as plain numbers. Use null when not given.",
     "- Never invent destinations, dates or dimensions. Use null when unsure.",
-    "The user message may be in French or English.",
+    "The user message may be written in any language.",
   ].join("\n");
 }
 
@@ -747,10 +581,20 @@ function buildSearchParamsFromLlm(
   ) as SearchParams;
 }
 
+function toDetectedLanguage(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length >= 2 ? trimmed : undefined;
+}
+
 // LLM-first extraction via Groq. Falls back (returns null) whenever the LLM is
 // unavailable, unauthenticated (e.g. unit tests without LLM_API_KEY) or returns
 // invalid JSON, so the deterministic regex parser stays as a safety net.
 async function extractIntentWithLlm(message: string): Promise<{
+  detectedLanguage?: string;
   intent: ServerToServerIntent;
   searchParams: SearchParams;
 } | null> {
@@ -781,6 +625,7 @@ async function extractIntentWithLlm(message: string): Promise<{
     const raw = llmExtractionSchema.parse(json);
 
     return {
+      detectedLanguage: toDetectedLanguage(raw.detectedLanguage),
       intent: raw.intent,
       searchParams: buildSearchParamsFromLlm(raw),
     };
@@ -812,21 +657,30 @@ function resolveWithRegex(message: string): {
 export async function handleServerToServerChat(
   request: ServerToServerChatRequest
 ): Promise<ServerToServerChatResponse> {
-  const locale = normalizeLocale(request.locale);
-
+  const llmResult = await extractIntentWithLlm(request.message);
   const { intent, searchParams } =
-    (await extractIntentWithLlm(request.message)) ??
-    resolveWithRegex(request.message);
+    llmResult ?? resolveWithRegex(request.message);
+
+  // Reply in the language of the user's message: the LLM detection wins when
+  // available, then the deterministic detector, then the frontend locale, then
+  // French. See language.ts.
+  const language: ReplyLanguage = resolveReplyLanguage(
+    llmResult?.detectedLanguage ?? detectLanguage(request.message),
+    request.locale
+  );
 
   // Temporary [S2S] log of the resolved intent and extracted search params.
   console.log(
-    `[S2S] intent=${intent} searchParams=${JSON.stringify(searchParams)}`
+    `[S2S] intent=${intent} language=${language} searchParams=${JSON.stringify(
+      searchParams
+    )}`
   );
 
   if (intent === "unsupported") {
     return serverToServerChatResponseSchema.parse({
+      detectedLanguage: language,
       intent: "unsupported",
-      reply: createUnsupportedReply(locale),
+      reply: createUnsupportedReply(language),
       results: [],
       searchParams,
     });
@@ -834,19 +688,21 @@ export async function handleServerToServerChat(
 
   if (intent === "general_question") {
     return serverToServerChatResponseSchema.parse({
+      detectedLanguage: language,
       intent: "general_question",
-      reply: createGeneralReply(locale),
+      reply: createGeneralReply(language),
       results: [],
       searchParams,
     });
   }
 
-  const missingFields = listMissingFields(searchParams, locale);
+  const missingFields = listMissingFields(searchParams, language);
 
   if (missingFields.length > 0) {
     return serverToServerChatResponseSchema.parse({
+      detectedLanguage: language,
       intent: "missing_information",
-      reply: createMissingInformationReply(missingFields, locale),
+      reply: createMissingInformationReply(missingFields, language),
       results: [],
       searchParams,
     });
@@ -858,19 +714,21 @@ export async function handleServerToServerChat(
 
     if (error) {
       return serverToServerChatResponseSchema.parse({
+        detectedLanguage: language,
         intent: "error",
-        reply: createAvailabilityErrorReply(error, locale),
+        reply: createAvailabilityErrorReply(error, language),
         results: [],
         searchParams,
       });
     }
 
     return serverToServerChatResponseSchema.parse({
+      detectedLanguage: language,
       intent: "availability_search",
       reply: createAvailabilityResultsReply(
         mappedResults,
         searchParams,
-        locale
+        language
       ),
       results: mappedResults,
       searchParams,
@@ -879,8 +737,9 @@ export async function handleServerToServerChat(
     const message = error instanceof Error ? error.message : "unknown error";
 
     return serverToServerChatResponseSchema.parse({
+      detectedLanguage: language,
       intent: "error",
-      reply: createAvailabilityErrorReply(message, locale),
+      reply: createAvailabilityErrorReply(message, language),
       results: [],
       searchParams,
     });

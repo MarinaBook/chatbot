@@ -46,6 +46,8 @@ CRITICAL RULES:
 
 export const regularPrompt = `You are a helpful assistant. Keep responses concise and direct.
 
+Always write your entire reply in the same language as the user's most recent message. If the message mixes languages, use its dominant language. Never default to English just because the message is not in French. Keep port names, place names, URLs, prices, currencies and dates exactly as provided, without translating them.
+
 When asked to write, create, or build something, do it immediately. Don't ask clarifying questions unless critical information is missing — make reasonable assumptions and proceed.`;
 
 export const marinabookGroundingPrompt = `MarinaBook grounding rules (always apply):
