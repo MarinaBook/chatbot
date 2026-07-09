@@ -655,10 +655,27 @@ function resolveWithRegex(message: string): {
   };
 }
 
+type IntentExtraction = {
+  detectedLanguage?: string;
+  intent: ServerToServerIntent;
+  searchParams: SearchParams;
+};
+
+// Optional seams for deterministic tests only. Production always uses the
+// defaults: the Groq extraction and the real clock.
+export type HandleServerToServerChatOptions = {
+  extract?: (message: string) => Promise<IntentExtraction | null>;
+  now?: () => Date;
+};
+
 export async function handleServerToServerChat(
-  request: ServerToServerChatRequest
+  request: ServerToServerChatRequest,
+  options: HandleServerToServerChatOptions = {}
 ): Promise<ServerToServerChatResponse> {
-  const llmResult = await extractIntentWithLlm(request.message);
+  const extract = options.extract ?? extractIntentWithLlm;
+  const referenceDate = options.now?.() ?? new Date();
+
+  const llmResult = await extract(request.message);
   const { intent, searchParams: extractedSearchParams } =
     llmResult ?? resolveWithRegex(request.message);
 
@@ -666,8 +683,9 @@ export async function handleServerToServerChat(
   // mese di settembre", "خلال شهر سبتمبر") is resolved to the first and last day
   // of that month regardless of whether the LLM or the regex fallback produced
   // the params. Applied BEFORE the missing-information validation below, so two
-  // identical requests always yield the same dates. See dates.ts.
-  const monthRange = resolveFullMonthRange(request.message, new Date());
+  // identical requests always yield the same dates — never depending on
+  // request.locale. See dates.ts.
+  const monthRange = resolveFullMonthRange(request.message, referenceDate);
   const searchParams: SearchParams = monthRange
     ? {
         ...extractedSearchParams,

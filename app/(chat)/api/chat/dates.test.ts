@@ -91,3 +91,43 @@ test("is deterministic for two identical inputs", () => {
   const second = resolveFullMonthRange("per il mese di settembre", REF);
   assert.deepEqual(first, second);
 });
+
+const AR_SEPTEMBER = { arrivalDate: "2026-09-01", departureDate: "2026-09-30" };
+
+// Every Arabic "full month" phrasing listed in the bug report, plus the attached
+// prefixes ل/ب/و/ف on شهر, and the bare month name with/without a year.
+const ARABIC_VARIANTS = [
+  "لشهر سبتمبر",
+  "في شهر سبتمبر",
+  "خلال شهر سبتمبر",
+  "طوال شهر سبتمبر",
+  "شهر سبتمبر",
+  "لشهر سبتمبر 2026",
+  "في سبتمبر",
+  "سبتمبر 2026",
+  "بشهر سبتمبر",
+  "وشهر سبتمبر",
+  "فشهر سبتمبر",
+];
+
+for (const variant of ARABIC_VARIANTS) {
+  test(`normalizes the Arabic full-month expression "${variant}"`, () => {
+    assert.deepEqual(resolveFullMonthRange(variant, REF), AR_SEPTEMBER);
+  });
+}
+
+test("normalizes the exact reproduction message (trailing Arabic comma)", () => {
+  assert.deepEqual(
+    resolveFullMonthRange(
+      "أرغب في الحصول على مرسى في تونس لشهر سبتمبر، لقارب أبعاده متر واحد × متر واحد وغاطسه متر واحد.",
+      REF
+    ),
+    AR_SEPTEMBER
+  );
+});
+
+test("ignores Arabic diacritics and tatweel when matching a month", () => {
+  // "في شهر سَبـتمبر" — a fatha after س and a tatweel (ـ) before ت.
+  const withMarks = "في شهر سَبـتمبر";
+  assert.deepEqual(resolveFullMonthRange(withMarks, REF), AR_SEPTEMBER);
+});

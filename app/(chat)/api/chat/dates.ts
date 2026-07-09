@@ -69,26 +69,46 @@ const RAW_MONTH_NAMES: [string, number][] = [
   ["ديسمبر", 12],
 ];
 
-function normalizeMonthToken(value: string) {
+// Normalizes a value for matching: NFD + strip combining marks (Latin accents
+// AND Arabic harakat, including the hamza that NFD splits off أ/إ/آ), remove the
+// Arabic tatweel (ـ U+0640), collapse whitespace and lowercase. Applied to both
+// the message and the month table so lookups are script-, diacritic-, tatweel-
+// and case-insensitive. It never mutates the original message used for the reply.
+function normalizeForMatching(value: string) {
   return value
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
+    .replace(/ـ/g, "")
+    .replace(/\s+/g, " ")
     .toLowerCase()
     .trim();
 }
 
 const MONTH_NAME_TO_NUMBER = new Map<string, number>(
-  RAW_MONTH_NAMES.map(([name, number]) => [normalizeMonthToken(name), number])
+  RAW_MONTH_NAMES.map(([name, number]) => [normalizeForMatching(name), number])
 );
+
+// Normalized Arabic month names, used to build the Arabic detection regex.
+const ARABIC_MONTH_NAMES = RAW_MONTH_NAMES.filter(([name]) =>
+  /[؀-ۿ]/.test(name)
+).map(([name]) => normalizeForMatching(name));
 
 // "mois de/d'…" (French) and "mese di/d'…" (Italian) followed by a month name and
 // an optional explicit 4-digit year.
 const LATIN_MONTH_EXPRESSION =
   /\b(?:mois|mese)\s+d(?:e|i)?['’]?\s*([A-Za-zÀ-ÖØ-öø-ÿ]+)(?:\s+(\d{4}))?/i;
 
-// "شهر …" (Arabic "month of …") followed by an Arabic month name and an optional
-// explicit 4-digit year.
-const ARABIC_MONTH_EXPRESSION = /شهر\s+([؀-ۿ]+)(?:\s+(\d{4}))?/;
+// Arabic full-month expressions. The month name may be introduced by "شهر"
+// ("month of …", with an optional attached prefix ل/ب/و/ف/ك) or stand on its own
+// (e.g. "في سبتمبر", "سبتمبر 2026"). Arabic word boundaries are unreliable in JS,
+// so we anchor on non-letter lookarounds instead of \b. An optional explicit
+// 4-digit year may follow the month name.
+const ARABIC_MONTH_EXPRESSION = new RegExp(
+  `(?:^|[^\\p{L}])(?:[لبوفك]?شهر\\s+)?(${ARABIC_MONTH_NAMES.join(
+    "|"
+  )})(?![\\p{L}])(?:\\s+(\\d{4}))?`,
+  "u"
+);
 
 type MonthExpression = { monthName: string; explicitYear?: number };
 
@@ -136,7 +156,7 @@ export function resolveFullMonthRange(
   message: string,
   referenceDate: Date
 ): MonthRange | undefined {
-  const normalized = message.replace(/\s+/g, " ").trim();
+  const normalized = normalizeForMatching(message);
   const expression = matchMonthExpression(normalized);
 
   if (!expression) {
@@ -144,7 +164,7 @@ export function resolveFullMonthRange(
   }
 
   const month = MONTH_NAME_TO_NUMBER.get(
-    normalizeMonthToken(expression.monthName)
+    normalizeForMatching(expression.monthName)
   );
 
   if (!month) {
