@@ -19,6 +19,7 @@
     "test:unit": "node --conditions=react-server --import tsx --test 'app/(chat)/api/chat/server-to-server-http.test.ts' 'app/(chat)/api/chat/server-to-server.test.ts' 'proxy.test.ts' lib/ai/tools/search-availability.test.ts lib/ai/tools/prepare-booking.test.ts lib/ai/tools/prepare-booking.integration.test.ts lib/basic-auth.test.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.9",
     "@ai-sdk/otel": "^1.0.15",
     "@ai-sdk/provider": "^4.0.2",
     "@ai-sdk/react": "4.0.16",
