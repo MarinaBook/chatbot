@@ -4,6 +4,10 @@ import { z } from "zod";
 import { DEFAULT_CHAT_MODEL } from "@/lib/ai/models";
 import { getLanguageModel } from "@/lib/ai/providers";
 import { searchAvailability } from "@/lib/ai/tools/search-availability";
+import {
+  extractAssistantMetadata,
+  marinaBookSourceSchema,
+} from "@/lib/marinabook-metadata";
 import { resolveFullMonthRange } from "./dates";
 import {
   detectLanguage,
@@ -31,18 +35,28 @@ const supportedIntentSchema = z.enum([
 
 export const MAX_SERVER_TO_SERVER_MESSAGE_LENGTH = 2000;
 
+// Shape of the payload the MarinaBook backend orchestrator sends to this
+// endpoint (POST /api/chat, Bearer CHATBOT_API_SECRET). Validation must stay at
+// least as permissive as the backend's own `ai-search` schema, otherwise a
+// payload the backend considers valid would be rejected here (400 -> the
+// backend surfaces it as a 502). `sessionId` and `context` are validated but
+// not used downstream; they are accepted leniently on purpose.
 export const serverToServerChatRequestSchema = z.object({
   context: z
     .object({
       currency: z.string().trim().min(1).max(12).optional(),
-      currentUrl: z.string().trim().url().optional(),
+      // Backend contract: any string up to 2048 chars (not URL-validated).
+      // Unused by the chatbot, so we do not re-impose a stricter `.url()` check.
+      currentUrl: z.string().trim().max(2048).optional(),
       userId: z.string().trim().min(1).max(128).optional(),
     })
     .loose()
     .default({}),
   locale: z.string().trim().min(2).max(10).default("fr"),
   message: z.string().trim().min(1).max(MAX_SERVER_TO_SERVER_MESSAGE_LENGTH),
-  sessionId: z.string().trim().uuid(),
+  // Backend contract: any non-empty string up to 128 chars. Must NOT be
+  // restricted to a UUID, or a forwarded non-UUID sessionId would be rejected.
+  sessionId: z.string().trim().min(1).max(128),
   source: z.literal(SERVER_TO_SERVER_SOURCE),
 });
 
@@ -67,11 +81,16 @@ const resultSchema = z.object({
 });
 
 export const serverToServerChatResponseSchema = z.object({
+  // Optional metadata forwarded verbatim from the MarinaBook backend when
+  // present. Never required — an older backend simply omits them.
+  assistantMode: z.string().optional(),
   detectedLanguage: z.string().min(2).max(10),
   intent: supportedIntentSchema,
   reply: z.string().min(1),
+  requestId: z.string().optional(),
   results: z.array(resultSchema),
   searchParams: searchParamsSchema,
+  sources: z.array(marinaBookSourceSchema).optional(),
 });
 
 export type ServerToServerChatRequest = z.infer<
@@ -459,6 +478,9 @@ async function runAvailabilitySearch(searchParams: SearchParams) {
 
   return {
     error: response.error,
+    // Optional backend metadata (assistantMode/requestId/sources). `sources` is
+    // already sanitized by the tool; re-extraction here is idempotent.
+    metadata: extractAssistantMetadata(response),
     results: Array.isArray(response.results) ? response.results : [],
   };
 }
@@ -742,11 +764,13 @@ export async function handleServerToServerChat(
   }
 
   try {
-    const { error, results } = await runAvailabilitySearch(searchParams);
+    const { error, metadata, results } =
+      await runAvailabilitySearch(searchParams);
     const mappedResults = mapAvailabilityResults(results);
 
     if (error) {
       return serverToServerChatResponseSchema.parse({
+        ...metadata,
         detectedLanguage: language,
         intent: "error",
         reply: createAvailabilityErrorReply(error, language),
@@ -756,6 +780,7 @@ export async function handleServerToServerChat(
     }
 
     return serverToServerChatResponseSchema.parse({
+      ...metadata,
       detectedLanguage: language,
       intent: "availability_search",
       reply: createAvailabilityResultsReply(

@@ -1,6 +1,7 @@
 import type { InferUITool, UIMessage } from "ai";
 import { z } from "zod";
 import type { ArtifactKind } from "@/components/chat/artifact";
+import type { MarinaBookAvailabilityResult } from "./ai/marinabook-ai-search";
 import type { createDocument } from "./ai/tools/create-document";
 import type { getWeather } from "./ai/tools/get-weather";
 import type { prepareBooking } from "./ai/tools/prepare-booking";
@@ -8,6 +9,7 @@ import type { requestSuggestions } from "./ai/tools/request-suggestions";
 import type { searchAvailability } from "./ai/tools/search-availability";
 import type { updateDocument } from "./ai/tools/update-document";
 import type { Suggestion } from "./db/schema";
+import type { MarinaBookSource } from "./marinabook-metadata";
 
 export const messageMetadataSchema = z.object({
   createdAt: z.string(),
@@ -54,6 +56,14 @@ export type CustomUIDataTypes = {
   finish: null;
   "chat-title": string;
   "waiting-status": WaitingStatusData;
+  // Structured extras attached to a MarinaBook ai-search answer (Flux A). The
+  // reply itself is a normal text part; this only carries sanitized sources and
+  // availability results to render alongside it.
+  "marinabook-answer": {
+    results?: MarinaBookAvailabilityResult[];
+    searchParams?: Record<string, unknown>;
+    sources?: MarinaBookSource[];
+  };
 };
 
 export type ChatMessage = UIMessage<

@@ -242,3 +242,113 @@ test("asks for boat length before calling MarinaBook for incomplete messages", a
   assert.equal(response.intent, "missing_information");
   assert.match(response.reply, /longueur du bateau/i);
 });
+
+test("forwards optional backend metadata and drops unsafe sources", async () => {
+  process.env.MARINABOOK_API_URL = "https://api.marinabook.app";
+  process.env.MARINABOOK_ASSISTANT_API_KEY = "assistant-secret";
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        assistantMode: "validated_answer",
+        count: 1,
+        requestId: "req_abc123",
+        results: [
+          {
+            available: true,
+            bookingUrl: "https://www.marinabook.app/place/demo",
+            currency: "EUR",
+            placeType: "ANNEAU",
+            portName: "VIEUX-PORT DE MARSEILLE",
+            price: 120,
+          },
+        ],
+        sources: [
+          { title: "Pricing", url: "https://www.marinabook.app/pricing" },
+          { title: "Evil", url: "javascript:alert(1)" },
+        ],
+        success: true,
+      }),
+      {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }
+    )) as typeof fetch;
+
+  const payload = serverToServerChatRequestSchema.parse({
+    locale: "fr",
+    message:
+      "Je vais à Marseille du 8 au 14 juillet 2026. Je cherche une place pour un bateau de 12 m de long, largeur de 4 m.",
+    sessionId: TEST_SESSION_ID,
+    source: "marinabook_frontend",
+  });
+
+  const response = await handleServerToServerChat(payload);
+
+  assert.equal(response.intent, "availability_search");
+  assert.equal(response.assistantMode, "validated_answer");
+  assert.equal(response.requestId, "req_abc123");
+  assert.deepEqual(response.sources, [
+    { title: "Pricing", url: "https://www.marinabook.app/pricing" },
+  ]);
+});
+
+test("omits optional metadata when the backend does not return it", async () => {
+  process.env.MARINABOOK_API_URL = "https://api.marinabook.app";
+  process.env.MARINABOOK_ASSISTANT_API_KEY = "assistant-secret";
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        count: 1,
+        results: [
+          {
+            available: true,
+            bookingUrl: "https://www.marinabook.app/place/demo",
+            currency: "EUR",
+            placeType: "ANNEAU",
+            portName: "VIEUX-PORT DE MARSEILLE",
+            price: 120,
+          },
+        ],
+        success: true,
+      }),
+      {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }
+    )) as typeof fetch;
+
+  const payload = serverToServerChatRequestSchema.parse({
+    locale: "fr",
+    message:
+      "Je vais à Marseille du 8 au 14 juillet 2026. Je cherche une place pour un bateau de 12 m de long, largeur de 4 m.",
+    sessionId: TEST_SESSION_ID,
+    source: "marinabook_frontend",
+  });
+
+  const response = await handleServerToServerChat(payload);
+
+  assert.equal(response.intent, "availability_search");
+  assert.equal(response.assistantMode, undefined);
+  assert.equal(response.requestId, undefined);
+  assert.equal(response.sources, undefined);
+});
+
+test("accepts the backend orchestrator payload (non-UUID sessionId, plain currentUrl)", () => {
+  // Exactly what the MarinaBook backend forwards to POST /api/chat: sessionId is
+  // an arbitrary string (not a UUID), currentUrl a plain string. Must parse.
+  const payload = serverToServerChatRequestSchema.parse({
+    context: {
+      currency: "EUR",
+      currentUrl: "https://www.marinabook.app/search",
+      userId: "user_1",
+    },
+    locale: "fr",
+    message: "Quelle est la politique de confidentialité de MarinaBook ?",
+    sessionId: "session-abc-123",
+    source: "marinabook_frontend",
+  });
+
+  assert.equal(payload.sessionId, "session-abc-123");
+  assert.equal(payload.context.currentUrl, "https://www.marinabook.app/search");
+  assert.equal(payload.context.userId, "user_1");
+});

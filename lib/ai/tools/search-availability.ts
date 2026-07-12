@@ -6,6 +6,10 @@ import {
   getMarinaBookApiKey,
   getMarinaBookErrorMessage,
 } from "@/lib/marinabook-api";
+import {
+  extractAssistantMetadata,
+  marinaBookSourceSchema,
+} from "@/lib/marinabook-metadata";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -37,13 +41,17 @@ const availabilityResultSchema = z
 
 // Lenient envelope. Accepts both the backend success payload and our own
 // { error } fallbacks. `.loose()` + all-optional fields means a well-formed
-// object never fails validation.
+// object never fails validation. `assistantMode`, `requestId` and `sources` are
+// optional metadata a newer backend MAY add; they are never required.
 const searchAvailabilityOutputSchema = z
   .object({
+    assistantMode: z.string().optional(),
     count: z.number().optional(),
     error: z.string().optional(),
     query: z.unknown().optional(),
+    requestId: z.string().optional(),
     results: z.array(availabilityResultSchema).optional(),
+    sources: z.array(marinaBookSourceSchema).optional(),
     success: z.boolean().optional(),
   })
   .loose();
@@ -100,7 +108,20 @@ export const searchAvailability = tool({
       // still return the raw payload rather than throwing, so a valid non-empty
       // result can never break the chat stream.
       const parsed = searchAvailabilityOutputSchema.safeParse(raw);
-      return parsed.success ? parsed.data : raw;
+      const output = parsed.success ? parsed.data : raw;
+
+      // Overlay sanitized optional metadata. `sources` is always replaced with
+      // the safe (HTTPS-only) list so no unsafe link from the backend can ever
+      // reach the client/UI. Absent fields stay absent (old-backend compatible).
+      const { assistantMode, requestId, sources } =
+        extractAssistantMetadata(raw);
+
+      return {
+        ...output,
+        ...(assistantMode && { assistantMode }),
+        ...(requestId && { requestId }),
+        sources: sources ?? [],
+      };
     } catch {
       return {
         error:

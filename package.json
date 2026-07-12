@@ -16,7 +16,7 @@
     "db:check": "drizzle-kit check",
     "db:up": "drizzle-kit up",
     "test": "export PLAYWRIGHT=True && pnpm exec playwright test",
-    "test:unit": "node --conditions=react-server --import tsx --test 'app/(chat)/api/chat/server-to-server-http.test.ts' 'app/(chat)/api/chat/server-to-server.test.ts' 'app/(chat)/api/chat/server-to-server.i18n.test.ts' 'app/(chat)/api/chat/dates.test.ts' 'app/(chat)/api/chat/language.test.ts' 'app/(chat)/api/chat/replies.test.ts' 'proxy.test.ts' lib/ai/prompts.test.ts lib/ai/tools/search-availability.test.ts lib/ai/tools/prepare-booking.test.ts lib/ai/tools/prepare-booking.integration.test.ts lib/basic-auth.test.ts"
+    "test:unit": "node --conditions=react-server --import tsx --test 'app/(chat)/api/chat/server-to-server-http.test.ts' 'app/(chat)/api/chat/server-to-server.test.ts' 'app/(chat)/api/chat/server-to-server.i18n.test.ts' 'app/(chat)/api/chat/dates.test.ts' 'app/(chat)/api/chat/language.test.ts' 'app/(chat)/api/chat/replies.test.ts' 'proxy.test.ts' lib/ai/prompts.test.ts lib/ai/tools/search-availability.test.ts lib/ai/tools/prepare-booking.test.ts lib/ai/tools/prepare-booking.integration.test.ts lib/basic-auth.test.ts lib/marinabook-metadata.test.ts lib/ai/marinabook-ai-search.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.9",

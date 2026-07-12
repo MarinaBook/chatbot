@@ -1,6 +1,7 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { Vote } from "@/lib/db/schema";
+import type { MarinaBookSource } from "@/lib/marinabook-metadata";
 import type { ChatMessage } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
 import { MessageContent, MessageResponse } from "../ai-elements/message";
@@ -16,9 +17,11 @@ import { useDataStream } from "./data-stream-provider";
 import { DocumentToolResult } from "./document";
 import { DocumentPreview } from "./document-preview";
 import { SparklesIcon } from "./icons";
+import { AvailabilityResults } from "./availability-results";
 import { MessageActions } from "./message-actions";
 import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
+import { Sources } from "./sources";
 import { Weather } from "./weather";
 
 function WaitingText() {
@@ -315,6 +318,44 @@ const PurePreviewMessage = ({
             )}
           </ToolContent>
         </Tool>
+      );
+    }
+
+    // MarinaBook availability/booking tool results are consumed by the model to
+    // write its prose reply, so they are not rendered as cards. The one thing we
+    // surface is the optional documentary `sources` a newer backend may attach,
+    // rendered safely (HTTPS-only links, no dangerouslySetInnerHTML).
+    if (type === "tool-searchAvailability" || type === "tool-prepareBooking") {
+      const { toolCallId, state } = part;
+
+      if (state === "output-available") {
+        const output = part.output as
+          | { error?: unknown; sources?: MarinaBookSource[] }
+          | undefined;
+        const sources =
+          output && !("error" in output) ? output.sources : undefined;
+
+        if (Array.isArray(sources) && sources.length > 0) {
+          return <Sources key={toolCallId} sources={sources} />;
+        }
+      }
+
+      return null;
+    }
+
+    // MarinaBook ai-search (Flux A): sanitized sources + availability results
+    // rendered alongside the verbatim reply text.
+    if (type === "data-marinabook-answer") {
+      const sources = part.data?.sources;
+      const results = part.data?.results;
+
+      return (
+        <div className="flex flex-col gap-2" key={key}>
+          {sources && sources.length > 0 ? <Sources sources={sources} /> : null}
+          {results && results.length > 0 ? (
+            <AvailabilityResults results={results} />
+          ) : null}
+        </div>
       );
     }
 

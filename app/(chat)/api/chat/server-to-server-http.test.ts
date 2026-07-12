@@ -107,6 +107,39 @@ test("returns 200 JSON for a valid bearer token", async () => {
   assert.equal(json.results[0].portName, "PORT SIDI BOU SAID");
 });
 
+test("accepts the backend orchestrator payload with a non-UUID sessionId", async () => {
+  process.env.CHATBOT_API_SECRET = "expected-secret";
+
+  // Mirrors the exact backend -> chatbot payload (Bearer + non-UUID sessionId +
+  // full context). A general question needs no backend fetch, so this isolates
+  // the incoming-contract compatibility.
+  const response = await maybeHandleServerToServerChatRequest({
+    authorizationHeader: "Bearer expected-secret",
+    json: {
+      context: {
+        currency: "EUR",
+        currentUrl: "https://www.marinabook.app/search",
+        userId: "user_1",
+      },
+      locale: "fr",
+      message: "Bonjour, qui es-tu ?",
+      sessionId: "session-abc-123",
+      source: "marinabook_frontend",
+    },
+  });
+
+  assert.ok(response);
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get(SERVER_TO_SERVER_MODE_HEADER),
+    SERVER_TO_SERVER_MODE_VALUE
+  );
+
+  const json = await response.json();
+  assert.equal(json.intent, "general_question");
+  assert.equal(typeof json.reply, "string");
+});
+
 test("returns 400 JSON for invalid bearer request bodies", async () => {
   const request = new Request("http://localhost/api/chat", {
     body: "{",

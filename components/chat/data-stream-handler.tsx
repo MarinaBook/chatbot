@@ -27,6 +27,11 @@ export function DataStreamHandler() {
         mutate(unstable_serialize(getChatHistoryPaginationKey));
         continue;
       }
+      // Rendered inline as a message part (Sources + availability results), not
+      // an artifact side-effect. Skip the artifact handling below.
+      if (delta.type === "data-marinabook-answer") {
+        continue;
+      }
       const artifactDefinition = artifactDefinitions.find(
         (currentArtifactDefinition) =>
           currentArtifactDefinition.kind === artifact.kind

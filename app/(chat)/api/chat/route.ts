@@ -1,12 +1,8 @@
-import { geolocation, ipAddress } from "@vercel/functions";
+import { ipAddress } from "@vercel/functions";
 import {
-  convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
-  isStepCount,
-  streamText,
-  toUIMessageStream,
 } from "ai";
 import { checkBotId } from "botid/server";
 import { after } from "next/server";
@@ -14,22 +10,14 @@ import { createResumableStreamContext } from "resumable-stream";
 import { auth, type UserType } from "@/app/(auth)/auth";
 import { entitlementsByUserType } from "@/lib/ai/entitlements";
 import {
+  callMarinaBookAiSearch,
+  getNeutralTechnicalMessage,
+} from "@/lib/ai/marinabook-ai-search";
+import {
   allowedModelIds,
   chatModels,
   DEFAULT_CHAT_MODEL,
-  getCapabilities,
-  getModelAvailability,
 } from "@/lib/ai/models";
-import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
-import { getLanguageModel } from "@/lib/ai/providers";
-import { createDocument } from "@/lib/ai/tools/create-document";
-import { editDocument } from "@/lib/ai/tools/edit-document";
-import { getWeather } from "@/lib/ai/tools/get-weather";
-import { prepareBooking } from "@/lib/ai/tools/prepare-booking";
-import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
-import { searchAvailability } from "@/lib/ai/tools/search-availability";
-import { updateDocument } from "@/lib/ai/tools/update-document";
-import { isProductionEnvironment } from "@/lib/constants";
 import {
   createStreamId,
   deleteChatById,
@@ -44,9 +32,10 @@ import {
 import type { DBMessage } from "@/lib/db/schema";
 import { ChatbotError } from "@/lib/errors";
 import { checkIpRateLimit } from "@/lib/ratelimit";
-import type { ChatMessage, WaitingStatusData } from "@/lib/types";
+import type { ChatMessage } from "@/lib/types";
 import { convertToUIMessages, generateUUID } from "@/lib/utils";
 import { generateTitleFromUserMessage } from "../../actions";
+import { detectLanguage } from "./language";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
 import {
   isBearerAuthorizationHeader,
@@ -56,12 +45,26 @@ import {
 
 export const maxDuration = 60;
 
-const HEALTH_CHECK_DELAY_MS = 9000;
+// Joins the text parts of the most recent user message. This is what we forward
+// to the MarinaBook backend orchestrator.
+function extractLatestUserText(messages: ChatMessage[]): string {
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "user");
 
-function isModelStreamActivity(chunk: { type: string }) {
-  return !["start", "start-step", "finish-step", "finish", "raw"].includes(
-    chunk.type
-  );
+  if (!lastUserMessage) {
+    return "";
+  }
+
+  return lastUserMessage.parts
+    .filter(
+      (part): part is { type: "text"; text: string } =>
+        part.type === "text" &&
+        typeof (part as { text?: unknown }).text === "string"
+    )
+    .map((part) => part.text)
+    .join(" ")
+    .trim();
 }
 
 function getStreamContext() {
@@ -194,15 +197,6 @@ export async function POST(request: Request) {
       ];
     }
 
-    const { longitude, latitude, city, country } = geolocation(request);
-
-    const requestHints: RequestHints = {
-      city,
-      country,
-      latitude,
-      longitude,
-    };
-
     if (message?.role === "user") {
       await saveMessages({
         messages: [
@@ -219,146 +213,78 @@ export async function POST(request: Request) {
     }
 
     const modelConfig = chatModels.find((m) => m.id === chatModel);
-    const modelCapabilities = await getCapabilities();
-    const capabilities = modelCapabilities[chatModel];
-    const isReasoningModel = capabilities?.reasoning === true;
-    const supportsTools = capabilities?.tools === true;
 
-    const modelMessages = await convertToModelMessages(uiMessages);
+    // MarinaBook Flux A: the conversational answer is produced by the backend
+    // orchestrator (POST /api/assistant/ai-search) — validated answers,
+    // Knowledge Base, RAG, cache, then Groq strictly on the backend as a last
+    // resort. No local LLM ever produces a MarinaBook answer here. Deterministic
+    // language detection (no LLM) only picks the reply language.
+    const userMessageText = extractLatestUserText(uiMessages);
+    const aiSearchLocale = detectLanguage(userMessageText);
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
         const modelName = modelConfig?.name ?? chatModel;
-        let hasModelActivity = false;
-        let healthCheckTimer: ReturnType<typeof setTimeout> | undefined;
 
-        const clearHealthCheckTimer = () => {
-          if (healthCheckTimer) {
-            clearTimeout(healthCheckTimer);
-          }
-        };
+        // The server-generated message id is injected into this chunk, so the
+        // client adopts the same id that onEnd persists (votes, resume).
+        dataStream.write({ type: "start" });
 
-        const writeWaitingStatus = (
-          phase: WaitingStatusData["phase"],
-          messageText: string
-        ) => {
-          if (hasModelActivity && phase !== "thinking") {
-            return;
-          }
-          dataStream.write({
-            data: {
-              message: messageText,
-              modelId: chatModel,
-              modelName,
-              phase,
-            },
-            transient: true,
-            type: "data-waiting-status",
-          });
-        };
-
-        writeWaitingStatus("waiting", "Waiting...");
-
-        healthCheckTimer = setTimeout(() => {
-          getModelAvailability(chatModel)
-            .then((availability) => {
-              if (availability === "impacted") {
-                writeWaitingStatus(
-                  "health",
-                  `${modelName} may be slow or unavailable right now...`
-                );
-              } else {
-                writeWaitingStatus("still-waiting", "Still waiting...");
-              }
-            })
-            .catch(() => {
-              writeWaitingStatus("still-waiting", "Still waiting...");
-            });
-        }, HEALTH_CHECK_DELAY_MS);
-
-        const markModelActive = () => {
-          if (hasModelActivity) {
-            return;
-          }
-          hasModelActivity = true;
-          clearHealthCheckTimer();
-          writeWaitingStatus("thinking", "Thinking...");
-        };
-
-        const stopWaitingStatus = () => {
-          hasModelActivity = true;
-          clearHealthCheckTimer();
-        };
-
-        const result = streamText({
-          activeTools:
-            isReasoningModel && !supportsTools
-              ? []
-              : [
-                  "getWeather",
-                  "searchAvailability",
-                  "prepareBooking",
-                  "createDocument",
-                  "editDocument",
-                  "updateDocument",
-                  "requestSuggestions",
-                ],
-          instructions: systemPrompt({ requestHints, supportsTools }),
-          messages: modelMessages,
-          model: getLanguageModel(chatModel),
-          onAbort() {
-            stopWaitingStatus();
+        dataStream.write({
+          data: {
+            message: "Waiting...",
+            modelId: chatModel,
+            modelName,
+            phase: "waiting",
           },
-          onChunk({ chunk }) {
-            if (isModelStreamActivity(chunk)) {
-              markModelActive();
-            }
-          },
-          onEnd() {
-            stopWaitingStatus();
-          },
-          onError() {
-            stopWaitingStatus();
-          },
-          providerOptions: {
-            ...(modelConfig?.reasoningEffort && {
-              openai: { reasoningEffort: modelConfig.reasoningEffort },
-            }),
-          },
-          stopWhen: isStepCount(5),
-          telemetry: {
-            functionId: "stream-text",
-            isEnabled: isProductionEnvironment,
-          },
-          tools: {
-            createDocument: createDocument({
-              dataStream,
-              modelId: chatModel,
-              session,
-            }),
-            editDocument: editDocument({ dataStream, session }),
-            getWeather,
-            prepareBooking,
-            requestSuggestions: requestSuggestions({
-              dataStream,
-              modelId: chatModel,
-              session,
-            }),
-            searchAvailability,
-            updateDocument: updateDocument({
-              dataStream,
-              modelId: chatModel,
-              session,
-            }),
-          },
+          transient: true,
+          type: "data-waiting-status",
         });
 
-        dataStream.merge(
-          toUIMessageStream({
-            sendReasoning: isReasoningModel,
-            stream: result.stream,
-          })
-        );
+        const answer = userMessageText
+          ? await callMarinaBookAiSearch({
+              locale: aiSearchLocale,
+              message: userMessageText,
+              sessionId: id,
+            })
+          : ({ ok: false } as const);
+
+        // On a technical failure we show a neutral message. We never fall back
+        // to a local LLM and never fabricate a documentary answer.
+        const replyText = answer.ok
+          ? answer.data.reply
+          : getNeutralTechnicalMessage(aiSearchLocale);
+
+        const answerId = generateUUID();
+        dataStream.write({ id: answerId, type: "text-start" });
+        dataStream.write({
+          delta: replyText,
+          id: answerId,
+          type: "text-delta",
+        });
+        dataStream.write({ id: answerId, type: "text-end" });
+
+        // Structured extras (sanitized sources + availability results) travel as
+        // a dedicated data part so the reply text is displayed verbatim.
+        if (
+          answer.ok &&
+          (answer.data.sources.length > 0 || answer.data.results.length > 0)
+        ) {
+          dataStream.write({
+            data: {
+              ...(answer.data.sources.length > 0 && {
+                sources: answer.data.sources,
+              }),
+              ...(answer.data.results.length > 0 && {
+                results: answer.data.results,
+              }),
+              ...(answer.data.searchParams && {
+                searchParams: answer.data.searchParams,
+              }),
+            },
+            type: "data-marinabook-answer",
+          });
+        }
 
         if (titlePromise) {
           try {
@@ -369,6 +295,8 @@ export async function POST(request: Request) {
             /* non-fatal */
           }
         }
+
+        dataStream.write({ type: "finish" });
       },
       generateId: generateUUID,
       onEnd: async ({ messages: finishedMessages }) => {
@@ -413,9 +341,7 @@ export async function POST(request: Request) {
           });
         }
       },
-      onError: () => {
-        return "Oops, an error occurred!";
-      },
+      onError: () => "Oops, an error occurred!",
       originalMessages: isToolApprovalFlow ? uiMessages : undefined,
     });
 
